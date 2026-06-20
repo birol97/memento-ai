@@ -1,0 +1,22 @@
+fastapi>=0.115,<0.120
+uvicorn[standard]>=0.30,<1.0
+# faster-whisper 1.1+ pulls a PyAV that has 3.13 wheels and ffmpeg 7/8 support.
+# We pin the floor and let pip resolve the latest matching wheel.
+faster-whisper>=1.1.0
+# Force a PyAV that has prebuilt 3.13 wheels — avoids the source build that
+# breaks against system ffmpeg 8.x (AVStream.nb_side_data removed).
+av>=14.0.0
+numpy>=1.26,<3.0
+python-dotenv>=1.0
+pydantic>=2.8,<3.0
+pydantic-settings>=2.4,<3.0
+# Streaming copilot (M4). Local Ollama via httpx — see services/suggestions.py.
+httpx>=0.27,<1.0
+# Required by FastAPI for multipart/form-data file uploads.
+python-multipart>=0.0.9
+# Verify the HS256 session JWT minted by the Next frontend (auth / multi-tenancy).
+pyjwt>=2.8,<3.0
+# Encrypt channel credentials (SMTP/Twilio secrets) at rest — Fernet.
+cryptography>=42.0
+# Mint Twilio Voice access tokens for the in-browser softphone.
+twilio>=9.0

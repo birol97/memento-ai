@@ -1,0 +1,14 @@
+# Keep secrets, local data, and dev cruft out of the image.
+.env
+twilio.env
+.env.example
+data/
+recordings/
+scripts/
+README.md
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
