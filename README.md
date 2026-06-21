@@ -8,6 +8,8 @@
 ownership is a Sui object. Employees get cryptographic, per-customer, revocable access —
 the company keeps the keys.*
 
+### ▶ [Live demo](https://memento-ai-red.vercel.app) · 🧭 [Judge walkthrough & demo scenario](docs/DEMO.md)
+
 </div>
 
 ---
