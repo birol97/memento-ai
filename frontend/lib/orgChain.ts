@@ -54,8 +54,29 @@ export async function createOrg(name: string): Promise<{ orgId: string; digest: 
  *  authoritative owner until true per-user signing (sponsored tx) is enabled. */
 export async function createOrgForOwner(name: string, ownerAddress: string): Promise<{ orgId: string; digest: string }> {
   const { orgId, digest } = await createOrg(name);
-  await addMember(orgId, ownerAddress, "owner", "Owner");
-  return { orgId, digest };
+  const client = getSui();
+  // create_org transferred the new Org to the server; add_member then loads it via
+  // tx.object(orgId). On a public fullnode that read can race ahead of indexing
+  // ("input objects invalid: Object … does not exist"), so wait until the Org is
+  // visible, then register the owner-member, retrying while it's not-yet-indexed.
+  for (let i = 0; i < 8; i++) {
+    const o = await client.getObject({ id: orgId, options: {} }).catch(() => null);
+    if (o?.data) break;
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  const notIndexed = /does not exist|not exist|notExist|ObjectNotFound|deleted/i;
+  let lastErr: unknown;
+  for (let i = 0; i < 4; i++) {
+    try {
+      await addMember(orgId, ownerAddress, "owner", "Owner");
+      return { orgId, digest };
+    } catch (e) {
+      lastErr = e;
+      if (!notIndexed.test(e instanceof Error ? e.message : String(e))) throw e;
+      await new Promise((r) => setTimeout(r, 900 * (i + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("owner registration failed (indexing lag)");
 }
 
 /** Add (or update) an employee — owner-only; issues them a MemberCap. */
