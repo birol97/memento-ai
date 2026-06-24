@@ -33,7 +33,7 @@ function RegisterEnoki() {
     // Pin the OAuth redirect to the app ORIGIN (no path) so it deterministically
     // matches the Authorized redirect URI in Google Cloud (e.g. http://localhost:3000).
     // In prod this becomes https://yourdomain — whitelist that too.
-    const redirectUrl = typeof window !== "undefined" ? window.location.origin : undefined;
+    const redirectUrl = typeof window !== "undefined" ? window.location.originddddddddddd : undefined;
     const { unregister } = registerEnokiWallets({
       apiKey,
       providers: { google: { clientId, redirectUrl } },
