@@ -3,10 +3,12 @@
 // First-run setup wizard. A fresh org can't use the app until it has (1) a
 // company on-chain and (3) at least one customer; (2) adding teammates is
 // optional. Enforced + sequential so the app is never an empty, confusing shell.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FiCheck, FiAlertTriangle, FiPlus, FiUserPlus, FiUsers, FiArrowRight } from "react-icons/fi";
 
-import { createOrgAction, addMemberAction } from "@/app/actions/orgDirectory";
+import { useCurrentAccount } from "@mysten/dapp-kit";
+
+import { createOrgAction, addMemberAction, myOrgsAction } from "@/app/actions/orgDirectory";
 import { provisionClientAccount } from "@/app/actions/orgMemory";
 import { createClient } from "@/lib/api";
 import { ROLES, type Role } from "@/lib/orgChain";
@@ -22,11 +24,20 @@ export function Onboarding({
   hasCustomer: boolean;
   onComplete: () => void;
 }) {
+  const account = useCurrentAccount();
   // start at the first incomplete step
   const [step, setStep] = useState<1 | 2 | 3>(!hasOrg ? 1 : 2);
   const [orgDone, setOrgDone] = useState(hasOrg);
+  const [orgId, setOrgId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
+
+  // If we arrive at step 2 with an org already created (revisiting onboarding),
+  // resolve this user's org id so "add teammate" targets the right company.
+  useEffect(() => {
+    if (orgId || !hasOrg || !account?.address) return;
+    myOrgsAction(account.address).then((o) => { if (o[0]) setOrgId(o[0].orgId); }).catch(() => {});
+  }, [orgId, hasOrg, account?.address]);
 
   // step 1
   const [company, setCompany] = useState("");
@@ -43,8 +54,8 @@ export function Onboarding({
   async function createCompany() {
     if (!company.trim() || busy) return;
     setBusy(true); setNote(null);
-    const r = await createOrgAction(company.trim());
-    if (r.ok) { setOrgDone(true); setNote({ ok: true, text: `“${company}” created on-chain` }); setStep(2); }
+    const r = await createOrgAction(company.trim(), account?.address);
+    if (r.ok) { setOrgId(r.orgId); setOrgDone(true); setNote({ ok: true, text: `“${company}” created on-chain` }); setStep(2); }
     else setNote({ ok: false, text: r.error });
     setBusy(false);
   }
@@ -52,10 +63,7 @@ export function Onboarding({
   async function addTeammate() {
     if (!mAddr.trim() || busy) return;
     setBusy(true); setNote(null);
-    // adds to the org created in step 1 (server owns a single org in this model)
-    const { listOrgsAction } = await import("@/app/actions/orgDirectory");
-    const orgs = await listOrgsAction();
-    const orgId = orgs[0]?.orgId;
+    // adds to the company this user just created (scoped to their login)
     if (!orgId) { setNote({ ok: false, text: "create the company first" }); setBusy(false); return; }
     const r = await addMemberAction(orgId, mAddr.trim(), mRole, mLabel.trim() || "Member");
     if (r.ok) { setTeam((t) => [...t, { label: mLabel.trim() || mAddr.slice(0, 8), role: mRole }]); setMAddr(""); setMLabel(""); setNote({ ok: true, text: "Teammate added" }); }

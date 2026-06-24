@@ -2,11 +2,17 @@
 
 // Server actions for the on-chain org directory (the employee directory lives on
 // Sui, not the local DB). The company address signs; reads come from the chain.
-import { createOrg, addMember, revokeMember, getOrg, listOwnedOrgs, orgsForMember, type Role, type OrgView } from "@/lib/orgChain";
+import { createOrg, createOrgForOwner, addMember, revokeMember, getOrg, listOwnedOrgs, orgsForMember, type Role, type OrgView } from "@/lib/orgChain";
 
-export async function createOrgAction(name: string): Promise<{ ok: true; orgId: string; digest: string } | { ok: false; error: string }> {
+export async function createOrgAction(name: string, ownerAddress?: string): Promise<{ ok: true; orgId: string; digest: string } | { ok: false; error: string }> {
   try {
     if (!name.trim()) return { ok: false, error: "name required" };
+    // When we know who's creating it (a logged-in user), scope the org to them so
+    // it only appears under their login. Anonymous/no-login mode falls back to the
+    // legacy shared create.
+    if (ownerAddress && /^0x[0-9a-fA-F]{1,64}$/.test(ownerAddress)) {
+      return { ok: true, ...(await createOrgForOwner(name.trim(), ownerAddress)) };
+    }
     return { ok: true, ...(await createOrg(name.trim())) };
   } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "create failed" }; }
 }

@@ -4,15 +4,17 @@
 // add/revoke employees with roles. The company owns the Org object; this screen
 // just drives it. "Who works here" is read straight from Sui, not a local DB.
 import { useEffect, useState } from "react";
+import { useCurrentAccount } from "@mysten/dapp-kit";
 import { FiPlus, FiUserPlus, FiCheck, FiAlertTriangle, FiRefreshCw } from "react-icons/fi";
 
-import { createOrgAction, addMemberAction, revokeMemberAction, listOrgsAction, getOrgAction } from "@/app/actions/orgDirectory";
+import { createOrgAction, addMemberAction, revokeMemberAction, listOrgsAction, myOrgsAction, getOrgAction } from "@/app/actions/orgDirectory";
 import { ROLES, type Role, type OrgView } from "@/lib/orgChain";
 
 type Note = { ok: boolean; text: string } | null;
 const short = (s: string, h = 8, t = 6) => (s.length > h + t + 1 ? `${s.slice(0, h)}…${s.slice(-t)}` : s);
 
 export default function OrgPage() {
+  const account = useCurrentAccount();
   const [orgs, setOrgs] = useState<OrgView[]>([]);
   const [sel, setSel] = useState<OrgView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,12 +28,22 @@ export default function OrgPage() {
 
   async function load(selectId?: string) {
     setLoading(true);
-    const list = await listOrgsAction();
+    const addr = account?.address;
+    // Scope to the logged-in user: only orgs they own/belong to (via their
+    // MemberCap). Anonymous/no-login mode falls back to the shared server list.
+    let list = addr ? await myOrgsAction(addr) : await listOrgsAction();
+    // A just-created org may not be indexed under getOwnedObjects yet — fetch it
+    // directly so it appears immediately after "Create".
+    if (selectId && !list.some((o) => o.orgId === selectId)) {
+      const o = await getOrgAction(selectId);
+      if (o) list = [o, ...list];
+    }
     setOrgs(list);
     setSel(list.find((o) => o.orgId === selectId) ?? list[0] ?? null);
     setLoading(false);
   }
-  useEffect(() => { void load(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [account?.address]);
 
   async function refreshSel() {
     if (!sel) return;
@@ -42,7 +54,7 @@ export default function OrgPage() {
   async function createOrg() {
     if (!newName.trim() || busy) return;
     setBusy(true); setNote(null);
-    const r = await createOrgAction(newName.trim());
+    const r = await createOrgAction(newName.trim(), account?.address);
     if (r.ok) { setNote({ ok: true, text: `Created · tx ${short(r.digest, 6, 6)}` }); setNewName(""); await load(r.orgId); }
     else setNote({ ok: false, text: r.error });
     setBusy(false);
@@ -101,7 +113,7 @@ export default function OrgPage() {
         <section className="tm-block" style={{ maxWidth: 700, marginTop: 14 }}>
           <h3 className="tm-h"><FiUserPlus /> {sel.name} — team</h3>
           <div className="tm-rc-row"><span>Org object</span><code>{short(sel.orgId, 10, 8)}</code></div>
-          <div className="tm-rc-row"><span>Owner</span><code>{short(sel.owner, 10, 8)}</code></div>
+          <div className="tm-rc-row"><span>Owner</span><code>{short(sel.members.find((m) => m.role === "owner")?.addr ?? sel.owner, 10, 8)}</code></div>
 
           <div className="org-members">
             {sel.members.length === 0 ? <span className="tm-muted">no employees yet</span> : sel.members.map((m) => (

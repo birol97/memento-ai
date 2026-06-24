@@ -46,6 +46,18 @@ export async function createOrg(name: string): Promise<{ orgId: string; digest: 
   return { orgId: created.objectId, digest: r.digest };
 }
 
+/** Create a company AND register `ownerAddress` as its owner-member in one go.
+ *  The server still signs/pays gas, but the resulting org is scoped to the creator:
+ *  the MemberCap issued here makes it show up under `orgsForMember(ownerAddress)`
+ *  (and only there), so a different login never sees someone else's company. The
+ *  on-chain Org.owner stays the server (gas payer) — the member table is the
+ *  authoritative owner until true per-user signing (sponsored tx) is enabled. */
+export async function createOrgForOwner(name: string, ownerAddress: string): Promise<{ orgId: string; digest: string }> {
+  const { orgId, digest } = await createOrg(name);
+  await addMember(orgId, ownerAddress, "owner", "Owner");
+  return { orgId, digest };
+}
+
 /** Add (or update) an employee — owner-only; issues them a MemberCap. */
 export async function addMember(orgId: string, member: string, role: Role, label: string): Promise<string> {
   const tx = new Transaction();
