@@ -17,6 +17,7 @@ import { FiLink2, FiDatabase, FiMessageSquare, FiRefreshCw } from "react-icons/f
 import { getCustomerCap, syncMemoryMap, transferCap, type CustomerCap } from "@/app/actions/onchain";
 import { fetchManifest, type Manifest } from "@/lib/api";
 import { clientNamespace } from "@/lib/clientNamespace";
+import { getSessionToken } from "@/lib/session";
 
 const WALRUS_AGG =
   process.env.NEXT_PUBLIC_WALRUS_AGGREGATOR ?? "https://aggregator.walrus-testnet.walrus.space";
@@ -68,7 +69,7 @@ export default function MemoryMapPanel({ clientId, clientName }: { clientId: num
   async function sync() {
     setSyncing(true);
     setNote(null);
-    const r = await syncMemoryMap(clientId, cap?.memoryBlobId);
+    const r = await syncMemoryMap(clientId, cap?.memoryBlobId, getSessionToken());
     if (r.ok) {
       setNote(`✓ ${r.kind === "mint" ? "Minted cap" : "Anchored"} — ${r.conversationCount} conversation(s) indexed · tx ${short(r.digest, 6, 6)}`);
       await load();

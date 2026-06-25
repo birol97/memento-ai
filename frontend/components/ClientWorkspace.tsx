@@ -33,6 +33,7 @@ import { recallClientMemory, rememberRaw, writeClientMemory } from "@/app/action
 import { syncMemoryMap } from "@/app/actions/onchain";
 import MemoryMapPanel from "./MemoryMapPanel";
 import { clientNamespace } from "@/lib/clientNamespace";
+import { getSessionToken } from "@/lib/session";
 import { loadCharacter, characterPrompt } from "@/lib/character";
 import { loadKnowledge } from "@/lib/knowledge";
 import { Dialer } from "@/components/Dialer";
@@ -232,7 +233,7 @@ export function ClientWorkspace({
       setSubject("");
       await loadThread();
       // keep the on-chain/Walrus manifest complete so retrieval never needs SQLite
-      syncMemoryMap(clientId).catch(() => {});
+      syncMemoryMap(clientId, undefined, getSessionToken()).catch(() => {});
     } catch (e) {
       setFlash({ ok: false, text: e instanceof Error ? e.message : "failed" });
     }
@@ -507,7 +508,7 @@ export function ClientWorkspace({
             logCall(clientId, { to: dialer.to, seconds: info.seconds, status: info.status, transcript: info.transcript })
               // once the call blob is on Walrus, refresh the on-chain memory map
               // so the cap → manifest → conversation-blobs chain includes it.
-              .then(() => syncMemoryMap(clientId))
+              .then(() => syncMemoryMap(clientId, undefined, getSessionToken()))
               .catch(() => {});
             if (info.transcript.trim()) writeClientMemory(clientId, `Phone call:\n${info.transcript}`).catch(() => {});
           }}
@@ -742,7 +743,7 @@ function CallMemorySaver({ client, onSaved, initialTranscript }: { client: Clien
       const r = await writeClientMemory(client.id, `${header}\n\n${transcript.trim()}`);
       if (r.ok) {
         await addNote(client.id, `📞 ${header}`).catch(() => {}); // visible record in the thread
-        syncMemoryMap(client.id).catch(() => {}); // refresh the on-chain memory map
+        syncMemoryMap(client.id, undefined, getSessionToken()).catch(() => {}); // refresh the on-chain memory map
         setMsg({ ok: true, text: `Saved to memory ✓ — ${r.saved}/${r.total} facts the AI will recall` });
         setTranscript("");
         setCtx("");

@@ -15,6 +15,7 @@ import { getCustomerCap, syncMemoryMap, type SyncReceipt } from "@/app/actions/o
 import { provisionClientAccount, grantEmployeeAccess, revokeEmployeeAccess, listAccountDelegates, generateEmployeeKey } from "@/app/actions/orgMemory";
 import type { Delegate } from "@/lib/orgMemory";
 import { clientNamespace } from "@/lib/clientNamespace";
+import { getSessionToken } from "@/lib/session";
 
 const RELATIONSHIPS = ["friend", "colleague", "customer", "family", "expert", "other"];
 
@@ -128,7 +129,7 @@ export default function TribeMembers({ clients, msgs, onChanged }: { clients: Cl
       onChanged();
       // single path: push identity to Walrus + anchor on the Sui cap, with a receipt
       setAddNote({ ok: true, text: `Added ${c.name} — publishing to Walrus + Sui…` });
-      const r = await syncMemoryMap(c.id);
+      const r = await syncMemoryMap(c.id, undefined, getSessionToken());
       if (r.ok) {
         setReceipt(r.receipt);
         setAddNote({ ok: true, text: `${c.name} pushed to Walrus + anchored on Sui ✓` });
@@ -162,7 +163,7 @@ export default function TribeMembers({ clients, msgs, onChanged }: { clients: Cl
         await updateClient(Number(selId), patch);
         setUpdNote({ ok: true, text: `Updated — ${summary}` });
         setInstr("");
-        syncMemoryMap(Number(selId)).catch(() => {}); // refresh identity on Walrus
+        syncMemoryMap(Number(selId), undefined, getSessionToken()).catch(() => {}); // refresh identity on Walrus
         onChanged();
         if (ctx && ctx.client.id === selId) void research(); // refresh open research
       }

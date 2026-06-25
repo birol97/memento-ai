@@ -421,14 +421,23 @@ export type SyncMapResult =
 export async function syncMemoryMap(
   clientId: number,
   recoverBlobId?: string,
+  authToken?: string | null,
 ): Promise<SyncMapResult> {
   try {
     // 1. publish the manifest (+ a dedicated profile/identity blob) to Walrus.
     //    `recover_blob_id` lets the backend rebuild a wiped cache from the cap's
     //    anchored manifest before publishing (Walrus-first / disposable SQLite).
+    //    This runs server-side (Sui signing key), so the caller MUST pass the
+    //    session token — otherwise the backend resolves us to the wrong (default)
+    //    org and can't find the customer (→ 404).
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "ngrok-skip-browser-warning": "true",
+    };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
     const pubRes = await fetch(`${BACKEND_BASE}/clients/${clientId}/manifest`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ recover_blob_id: recoverBlobId ?? null }),
       cache: "no-store",
     });
