@@ -142,3 +142,161 @@ async def publish_manifest(client_id: int, org_id: int | None = None) -> Dict[st
 async def read_manifest(blob_id: str) -> Dict[str, Any]:
     """Fetch + parse a manifest blob back from Walrus (the verify/handoff path)."""
     return await WalrusStore().get_json(blob_id)
+
+
+# ─── rebuild-from-chain (Walrus is the source of truth; SQLite is a cache) ───
+# When a customer is missing from SQLite (fresh/ephemeral deploy, wiped cache),
+# the on-chain cap still points at the customer's manifest blob on Walrus. Reading
+# that blob is enough to reseed the local cache — identity, sub-namespaces, the
+# conversation blob index, and the memory pointer — so recall/sync work again.
+
+async def rebuild_from_chain(
+    manifest_blob_id: str,
+    *,
+    org_id: int | None = None,
+    owner_sui_address: str | None = None,
+) -> Dict[str, Any]:
+    """Replay a Walrus manifest blob into the local cache. Raises if the blob is
+    unreadable or isn't a namespace manifest (e.g. a transcript fingerprint)."""
+    manifest = await read_manifest(manifest_blob_id)
+    if not isinstance(manifest, dict) or manifest.get("kind") != MANIFEST_KIND:
+        raise ValueError("anchored blob is not a namespace manifest")
+
+    client = manifest.get("client") or {}
+    client_id = client.get("id")
+    if not isinstance(client_id, int):
+        raise ValueError("manifest has no client.id — cannot restore")
+
+    manifest_org = manifest.get("org_id")
+    restore_org = manifest_org if isinstance(manifest_org, int) else org_id
+    if restore_org is None:
+        restore_org = repo.default_org_id()
+
+    repo.restore_client(
+        client_id=client_id,
+        name=client.get("name") or f"client-{client_id}",
+        org_id=restore_org,
+        owner_sui_address=owner_sui_address,
+        phone=client.get("phone"),
+        email=client.get("email"),
+        notes=client.get("notes"),
+        role=client.get("role"),
+        deal_stage=client.get("deal_stage"),
+        profile=client.get("profile"),
+        objective=client.get("objective"),
+        relationship=client.get("relationship"),
+    )
+
+    # sub-namespaces → subspaces registry (strip the parent prefix to get ns_key)
+    parent = client_namespace(client_id, restore_org)
+    prefix = f"{parent}__"
+    subs_restored = 0
+    for ns in manifest.get("namespaces") or []:
+        if ns.get("kind") != "sub":
+            continue
+        full = ns.get("namespace") or ""
+        ns_key = full[len(prefix):] if full.startswith(prefix) else full
+        if ns_key:
+            repo.create_subspace(client_id, ns_key, ns.get("label") or ns_key)
+            subs_restored += 1
+
+    # conversation blobs → message rows (the leaf index), de-duped on blob_id
+    existing = {m["blob_id"] for m in repo.list_client_blobs(client_id, restore_org)}
+    convos_restored = 0
+    for c in manifest.get("conversations") or []:
+        blob_id = c.get("blob_id")
+        if not blob_id or blob_id in existing:
+            continue
+        repo.create_message(
+            org_id=restore_org,
+            owner_sui_address=owner_sui_address,
+            client_id=client_id,
+            channel_id=None,
+            kind=c.get("kind") or "note",
+            direction=c.get("direction") or "in",
+            to_addr=None,
+            from_addr=None,
+            subject=None,
+            body=c.get("label"),
+            status="sent",
+            blob_id=blob_id,
+        )
+        existing.add(blob_id)
+        convos_restored += 1
+
+    # the customer's memory-doc pointer (recall reads from this)
+    pointer = manifest.get("memory_pointer")
+    if pointer:
+        repo.set_memory_pointer(client_id, pointer)
+
+    return {
+        "client_id": client_id,
+        "org_id": restore_org,
+        "subspaces_restored": subs_restored,
+        "conversations_restored": convos_restored,
+        "memory_pointer_restored": bool(pointer),
+    }
+
+
+async def ensure_client_cached(
+    client_id: int,
+    org_id: int | None = None,
+    owner_sui_address: str | None = None,
+    *,
+    recover_blob_id: str | None = None,
+) -> Dict[str, Any] | None:
+    """Return a client from the cache, transparently rebuilding it from chain if
+    it's missing. The customer-memory routes call this instead of ``repo.get_client``
+    so they work against an empty/wiped cache.
+
+    ``recover_blob_id`` is a fast path (the caller already knows the cap's anchored
+    blob, e.g. the frontend); otherwise the backend resolves it from the cap on Sui.
+    """
+    from app.services import sui_chain  # local import avoids import cycle
+
+    client = repo.get_client(client_id, org_id, owner_sui_address)
+    if client is not None:
+        return client
+
+    blob_id = recover_blob_id
+    if not blob_id:
+        namespace = client_namespace(client_id, org_id)
+        blob_id = await sui_chain.resolve_manifest_blob_id(namespace)
+    if not blob_id:
+        return None
+
+    try:
+        await rebuild_from_chain(blob_id, org_id=org_id, owner_sui_address=owner_sui_address)
+    except Exception as exc:  # noqa: BLE001 — recovery is best-effort
+        from app.core.logger import get_logger
+        get_logger(__name__).warning(
+            "rebuild-from-chain failed for client %s (blob %s): %s", client_id, blob_id, exc
+        )
+        return None
+    return repo.get_client(client_id, org_id, owner_sui_address)
+
+
+async def reconcile_all_from_chain() -> Dict[str, Any]:
+    """Rebuild the whole client list from every cap the server address owns.
+
+    Used to make the app usable against an empty cache (startup / empty list).
+    Ownership (a private-book concept) isn't recorded on-chain, so restored rows
+    are org-visible (owner_sui_address=None) — oversight roles see them, and a rep
+    re-claims a row the first time they open that customer.
+    """
+    from app.services import sui_chain  # local import avoids import cycle
+
+    if not sui_chain.enabled():
+        return {"enabled": False, "restored": 0}
+
+    restored = 0
+    failures = 0
+    for cap in await sui_chain.list_owned_caps():
+        if not cap.memory_blob_id:
+            continue
+        try:
+            await rebuild_from_chain(cap.memory_blob_id, owner_sui_address=None)
+            restored += 1
+        except Exception:  # noqa: BLE001 — skip fingerprints / unreadable blobs
+            failures += 1
+    return {"enabled": True, "restored": restored, "skipped": failures}

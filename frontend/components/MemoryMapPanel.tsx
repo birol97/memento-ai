@@ -68,7 +68,7 @@ export default function MemoryMapPanel({ clientId, clientName }: { clientId: num
   async function sync() {
     setSyncing(true);
     setNote(null);
-    const r = await syncMemoryMap(clientId);
+    const r = await syncMemoryMap(clientId, cap?.memoryBlobId);
     if (r.ok) {
       setNote(`✓ ${r.kind === "mint" ? "Minted cap" : "Anchored"} — ${r.conversationCount} conversation(s) indexed · tx ${short(r.digest, 6, 6)}`);
       await load();

@@ -418,13 +418,18 @@ export type SyncMapResult =
     }
   | { ok: false; error: string; blobId?: string; aggregatorUrl?: string };
 
-export async function syncMemoryMap(clientId: number): Promise<SyncMapResult> {
+export async function syncMemoryMap(
+  clientId: number,
+  recoverBlobId?: string,
+): Promise<SyncMapResult> {
   try {
     // 1. publish the manifest (+ a dedicated profile/identity blob) to Walrus.
+    //    `recover_blob_id` lets the backend rebuild a wiped cache from the cap's
+    //    anchored manifest before publishing (Walrus-first / disposable SQLite).
     const pubRes = await fetch(`${BACKEND_BASE}/clients/${clientId}/manifest`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ recover_blob_id: recoverBlobId ?? null }),
       cache: "no-store",
     });
     if (!pubRes.ok) return { ok: false, error: `publish manifest → HTTP ${pubRes.status}` };

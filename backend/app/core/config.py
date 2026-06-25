@@ -85,6 +85,21 @@ class Settings(BaseSettings):
     memory_recall_signals: int = 5    # most-recent N 'signal' entries to surface
     memory_recall_history: int = 8    # most-recent N 'history' entries to surface
 
+    # ── On-chain recovery (Walrus-first memory) ──
+    # The customer-memory path treats Walrus as the source of truth and SQLite as
+    # a disposable cache. When a customer isn't in the cache, the backend resolves
+    # its on-chain CustomerMemoryCap → anchored manifest blob → rebuilds the cache
+    # (see services/sui_chain.py + manifest.rebuild_from_chain). These locate the
+    # caps; leave sui_package_id / sui_server_address empty to disable recovery
+    # (the path then degrades to the old "404 if not cached" behaviour).
+    sui_network: str = "testnet"
+    sui_rpc_url: str = ""             # blank → derived from sui_network
+    sui_package_id: str = ""         # the published customer_memory package
+    sui_server_address: str = ""     # address that OWNS the caps (frontend's signer)
+    # Best-effort: on startup, rebuild the whole client list from owned caps so the
+    # app is usable against an empty DB. Turn off if you don't want startup RPC.
+    rebuild_from_chain_on_startup: bool = True
+
     # ── Auth / multi-tenancy (Phase 1) ──
     # HS256 secret shared with the Next frontend, which mints the session JWT
     # after verifying the user's zkLogin/Enoki session. The backend only verifies.

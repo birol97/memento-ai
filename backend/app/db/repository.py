@@ -204,6 +204,51 @@ def upsert_client(
         )
 
 
+def restore_client(
+    *,
+    client_id: int,
+    name: str,
+    org_id: Optional[int] = None,
+    owner_sui_address: Optional[str] = None,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    notes: Optional[str] = None,
+    role: Optional[str] = None,
+    deal_stage: Optional[str] = None,
+    profile: Optional[str] = None,
+    objective: Optional[str] = None,
+    relationship: Optional[str] = None,
+    memwal_account_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Recreate a client row with its ORIGINAL id (rebuild-from-chain recovery).
+
+    Unlike ``upsert_client`` (which lets SQLite assign a fresh autoincrement id),
+    this preserves the id read back from the on-chain manifest. The customer's
+    namespace is *derived* from that id (``salescall[-o<org>]-client-<id>``), so
+    keeping the id is what makes the restored cache line up with the existing
+    ``CustomerMemoryCap``. Idempotent: re-running refreshes the identity fields.
+    """
+    name = (name or "").strip() or f"client-{client_id}"
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO clients (id, name, phone, email, notes, role, deal_stage, "
+            "profile, objective, relationship, org_id, owner_sui_address, memwal_account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "name = excluded.name, phone = excluded.phone, email = excluded.email, "
+            "notes = excluded.notes, role = excluded.role, deal_stage = excluded.deal_stage, "
+            "profile = excluded.profile, objective = excluded.objective, "
+            "relationship = excluded.relationship, org_id = excluded.org_id, "
+            "owner_sui_address = excluded.owner_sui_address, "
+            "memwal_account_id = COALESCE(excluded.memwal_account_id, clients.memwal_account_id)",
+            (client_id, name, phone, email, notes, role, deal_stage, profile,
+             objective, relationship, org_id, owner_sui_address, memwal_account_id),
+        )
+        return dict(
+            conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        )
+
+
 def reassign_client_owner(client_id: int, org_id: int, new_owner: str) -> Optional[Dict[str, Any]]:
     """Reassign a client to another rep (oversight action). Scoped to the org."""
     with get_conn() as conn:

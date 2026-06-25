@@ -26,7 +26,7 @@ from typing import List, Optional
 
 import asyncio
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,21 @@ def _owner_filter(p: Principal) -> Optional[str]:
     """None for oversight roles (see all org clients); the caller's address for
     reps/managers (private books — see only their own)."""
     return None if p.role in OVERSIGHT_ROLES else p.sui_address
+
+
+async def _require_client(
+    client_id: int, principal: Principal, *, recover_blob_id: Optional[str] = None
+) -> dict:
+    """Fetch a client or 404 — but first try to rebuild it from chain if the cache
+    is empty. This is the Walrus-first guard for the customer-memory path: SQLite
+    is a disposable cache, the on-chain cap + Walrus manifest are the truth."""
+    from app.services import manifest as manifest_svc
+    client = await manifest_svc.ensure_client_cached(
+        client_id, principal.org_id, _owner_filter(principal), recover_blob_id=recover_blob_id
+    )
+    if client is None:
+        raise HTTPException(404, "client not found")
+    return client
 
 
 class ClientIn(BaseModel):
@@ -77,17 +92,29 @@ class TagsIn(BaseModel):
 # ─── clients ──────────────────────────────────────────────────────────────
 
 @router.get("/clients")
-def list_clients(
+async def list_clients(
     q: Optional[str] = None,
     limit: int = 50,
     principal: Principal = Depends(current_principal),
 ):
-    return {
-        "clients": repo.list_clients(
-            query=q, limit=limit, org_id=principal.org_id,
-            owner_sui_address=_owner_filter(principal),
-        )
-    }
+    clients = repo.list_clients(
+        query=q, limit=limit, org_id=principal.org_id,
+        owner_sui_address=_owner_filter(principal),
+    )
+    # Walrus-first: an empty cache (fresh/ephemeral deploy) is rebuilt from the
+    # caps the server owns on-chain, so the list is usable without a local DB.
+    if not clients and not q:
+        from app.services import manifest as manifest_svc
+        try:
+            result = await manifest_svc.reconcile_all_from_chain()
+            if result.get("restored"):
+                clients = repo.list_clients(
+                    query=q, limit=limit, org_id=principal.org_id,
+                    owner_sui_address=_owner_filter(principal),
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort recovery
+            log.warning("list_clients reconcile-from-chain failed: %s", exc)
+    return {"clients": clients}
 
 
 @router.post("/clients")
@@ -121,11 +148,8 @@ def create_client(body: ClientIn, principal: Principal = Depends(current_princip
 
 
 @router.get("/clients/{client_id}")
-def get_client(client_id: int, principal: Principal = Depends(current_principal)):
-    client = repo.get_client(client_id, principal.org_id, _owner_filter(principal))
-    if client is None:
-        raise HTTPException(404, "client not found")
-    return client
+async def get_client(client_id: int, principal: Principal = Depends(current_principal)):
+    return await _require_client(client_id, principal)
 
 
 @router.patch("/clients/{client_id}")
@@ -206,11 +230,10 @@ def all_tags():
 # ─── sessions ─────────────────────────────────────────────────────────────
 
 @router.get("/clients/{client_id}/sessions")
-def list_client_sessions(
+async def list_client_sessions(
     client_id: int, limit: int = 50, principal: Principal = Depends(current_principal)
 ):
-    if repo.get_client(client_id, principal.org_id, _owner_filter(principal)) is None:
-        raise HTTPException(404, "client not found")
+    await _require_client(client_id, principal)
     return {"sessions": repo.list_sessions_for_client(client_id, limit=limit)}
 
 
@@ -258,20 +281,18 @@ async def _summarize_call(transcript: str) -> str:
 
 
 @router.get("/clients/{client_id}/subspaces")
-def list_client_subspaces(
+async def list_client_subspaces(
     client_id: int, principal: Principal = Depends(current_principal)
 ):
-    if repo.get_client(client_id, principal.org_id, _owner_filter(principal)) is None:
-        raise HTTPException(404, "client not found")
+    await _require_client(client_id, principal)
     return {"subspaces": repo.list_subspaces(client_id)}
 
 
 @router.post("/clients/{client_id}/subspaces")
-def create_client_subspace(
+async def create_client_subspace(
     client_id: int, body: SubspaceIn, principal: Principal = Depends(current_principal)
 ):
-    if repo.get_client(client_id, principal.org_id, _owner_filter(principal)) is None:
-        raise HTTPException(404, "client not found")
+    await _require_client(client_id, principal)
     import re
     import uuid
 
@@ -377,12 +398,19 @@ async def log_client_call(
 
 @router.post("/clients/{client_id}/manifest")
 async def publish_client_manifest(
-    client_id: int, principal: Principal = Depends(current_principal)
+    client_id: int,
+    body: dict = Body(default={}),
+    principal: Principal = Depends(current_principal),
 ):
     """Build this customer's namespace map and write it to Walrus as an immutable
-    blob. Returns the blob id (to anchor in the on-chain cap) + a public URL."""
-    if repo.get_client(client_id, principal.org_id, _owner_filter(principal)) is None:
-        raise HTTPException(404, "client not found")
+    blob. Returns the blob id (to anchor in the on-chain cap) + a public URL.
+
+    If the cache has lost this customer, ``recover_blob_id`` (the cap's anchored
+    manifest, known to the frontend) is a fast path to rebuild it before publish;
+    otherwise the backend resolves it from the cap on Sui."""
+    await _require_client(
+        client_id, principal, recover_blob_id=(body or {}).get("recover_blob_id")
+    )
     from app.services import manifest as manifest_svc
     try:
         return await manifest_svc.publish_manifest(client_id, org_id=principal.org_id)
@@ -406,12 +434,11 @@ def set_client_memwal_account(
 
 
 @router.get("/clients/{client_id}/manifest")
-def preview_client_manifest(
+async def preview_client_manifest(
     client_id: int, principal: Principal = Depends(current_principal)
 ):
     """Preview the manifest that *would* be published (no Walrus write)."""
-    if repo.get_client(client_id, principal.org_id, _owner_filter(principal)) is None:
-        raise HTTPException(404, "client not found")
+    await _require_client(client_id, principal)
     from app.services import manifest as manifest_svc
     return manifest_svc.build_manifest(client_id, org_id=principal.org_id)
 

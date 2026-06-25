@@ -36,6 +36,16 @@ async def lifespan(app: FastAPI):
         transcription.load()
     else:
         log.info("transcription disabled (slim deploy) — Whisper not loaded")
+    # Walrus-first: rebuild the customer-memory cache from the caps we own on-chain
+    # so the app is usable even on a fresh/ephemeral deploy with an empty SQLite.
+    if settings.rebuild_from_chain_on_startup:
+        try:
+            from app.services import manifest as manifest_svc
+
+            result = await manifest_svc.reconcile_all_from_chain()
+            log.info("rebuild-from-chain on startup: %s", result)
+        except Exception as exc:  # noqa: BLE001 — best-effort, never block boot
+            log.warning("rebuild-from-chain on startup failed: %s", exc)
     # Stash on app.state so REST endpoints can reuse the same instances
     # the websocket pipeline does — one Whisper model, one Ollama client.
     app.state.transcription = transcription
