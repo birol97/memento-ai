@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     allowed_origins: Annotated[List[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]
     )
+    # Regex of additional allowed origins (CORS). Defaults to any *.vercel.app so
+    # rotating Vercel deploy/preview URLs don't break the browser with a CORS error.
+    # Set to "" to disable, or override for your own domain.
+    allowed_origin_regex: str = r"https://.*\.vercel\.app"
 
     # Set TRANSCRIPTION_ENABLED=false on hosts without the audio stack (slim deploy).
     transcription_enabled: bool = True

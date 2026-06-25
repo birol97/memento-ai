@@ -58,6 +58,11 @@ app = FastAPI(title="Conversation Copilot", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
+    # Vercel gives every deployment/preview a different *.vercel.app origin, so an
+    # exact-match list breaks (browser → "Failed to fetch") after each deploy.
+    # A regex keeps all of this project's Vercel URLs allowed. Override/disable via
+    # ALLOWED_ORIGIN_REGEX. Safe with allow_credentials=False (auth is a Bearer header).
+    allow_origin_regex=settings.allowed_origin_regex or None,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
