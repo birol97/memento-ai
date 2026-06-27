@@ -61,6 +61,30 @@ export function deriveOwnerKey(customerId: string): Ed25519Keypair {
   return Ed25519Keypair.fromSecretKey(seed);
 }
 
+/** The existing MemWalAccount id registered to `ownerAddress`, or null.
+ *  Accounts live in the AccountRegistry's `accounts: Table<address, ID>`, so a
+ *  customer's account is recoverable from its deterministic owner alone — no
+ *  stored pointer needed (used for idempotent provisioning + DB-wipe recovery). */
+async function accountForOwner(c: SuiJsonRpcClient, ownerAddress: string): Promise<string | null> {
+  try {
+    const reg = await c.getObject({ id: REGISTRY, options: { showContent: true } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tableId = (reg.data?.content as any)?.fields?.accounts?.fields?.id?.id;
+    if (!tableId) return null;
+    const f = await c.getDynamicFieldObject({ parentId: tableId, name: { type: "address", value: ownerAddress } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const val = (f.data?.content as any)?.fields?.value;
+    return typeof val === "string" ? val : null;
+  } catch {
+    return null; // dynamicFieldNotFound (no account) or transient read error
+  }
+}
+
+/** The existing account id for a customer, resolved from chain (or null). */
+export async function accountForCustomer(customerId: string): Promise<string | null> {
+  return accountForOwner(sui(), deriveOwnerKey(customerId).getPublicKey().toSuiAddress());
+}
+
 export type ProvisionResult = { accountId: string; ownerAddress: string };
 
 /** Create the org-owned MemWalAccount for a customer + add the org's app delegate.
@@ -69,6 +93,13 @@ export async function provisionCustomerAccount(customerId: string): Promise<Prov
   const c = sui();
   const owner = deriveOwnerKey(customerId);
   const ownerAddress = owner.getPublicKey().toSuiAddress();
+
+  // Recovery / idempotency: if this customer's deterministic owner already has an
+  // account in the registry (a wiped DB pointer, or a retried provision), reuse it
+  // instead of creating — and wasting gas on — a duplicate.
+  const existing = await accountForOwner(c, ownerAddress);
+  if (existing) return { accountId: existing, ownerAddress };
+
   const orgPub = await delegateKeyToPublicKey(orgDelegateKey());
 
   // ── gasless path: Enoki sponsors the org-owner's txs (no funding needed) ──

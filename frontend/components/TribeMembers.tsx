@@ -115,6 +115,18 @@ export default function TribeMembers({ clients, msgs, onChanged }: { clients: Cl
     setEmpLabel((l) => l || "Demo employee");
   }
 
+  // Provision (or recover) this customer's org-owned MemWal account, then refresh
+  // so the panel picks up the new account id. recover-or-create on chain → safe to
+  // click for a customer whose pointer was lost (e.g. after a cache wipe).
+  async function provision() {
+    if (selId === "" || teamBusy) return;
+    setTeamBusy(true); setTeamNote(null);
+    const r = await provisionClientAccount(Number(selId), getSessionToken());
+    setTeamNote(r.ok ? { ok: true, text: `Account ready · ${r.accountId.slice(0, 12)}…` } : { ok: false, text: r.error });
+    if (r.ok) onChanged();
+    setTeamBusy(false);
+  }
+
   async function add() {
     if (!name.trim() || adding) return;
     setAdding(true);
@@ -136,9 +148,16 @@ export default function TribeMembers({ clients, msgs, onChanged }: { clients: Cl
       } else {
         setAddNote({ ok: false, text: `Added, but publish failed: ${r.error}` });
       }
-      // background: provision this customer's OWN org-owned MemWal account (~15s)
-      provisionClientAccount(c.id)
-        .then((p) => console.log("[provision]", c.name, p.ok ? "account " + p.accountId : "failed: " + p.error))
+      // background: provision this customer's OWN org-owned MemWal account (~15s).
+      // Forward the session token so the backend caches the account id on the RIGHT
+      // org's client row (else 404 → "No org account yet" forever), then refresh so
+      // the Team-access panel picks it up.
+      provisionClientAccount(c.id, getSessionToken())
+        .then((p) => {
+          console.log("[provision]", c.name, p.ok ? "account " + p.accountId : "failed: " + p.error);
+          if (p.ok) { onChanged(); setAddNote({ ok: true, text: `${c.name} ready — org account provisioned ✓` }); }
+          else setAddNote({ ok: false, text: `${c.name}: account provisioning failed — ${p.error}` });
+        })
         .catch(() => {});
     } catch (e) {
       setAddNote({ ok: false, text: e instanceof Error ? e.message : "add failed" });
@@ -433,7 +452,13 @@ export default function TribeMembers({ clients, msgs, onChanged }: { clients: Cl
         {!selected ? (
           <p className="tm-hint">Pick a member above.</p>
         ) : !accountId ? (
-          <p className="tm-hint">No org account yet for {selected.name}. Add via Tribe → Members (provisions one), or it&apos;s still provisioning.</p>
+          <>
+            <p className="tm-hint">No org account yet for {selected.name}. It may still be provisioning — or click below to provision / link one now.</p>
+            <button className="tm-btn primary" onClick={provision} disabled={teamBusy}>
+              {teamBusy ? "On-chain…" : "Provision / link account"}
+            </button>
+            {teamNote && <p className={`tm-note ${teamNote.ok ? "ok" : "err"}`}>{teamNote.ok ? <FiCheck /> : <FiAlertTriangle />} {teamNote.text}</p>}
+          </>
         ) : (
           <>
             <div className="tm-pick"><label className="tm-lbl">Account</label><code className="tm-acct">{accountId.slice(0, 14)}…</code></div>

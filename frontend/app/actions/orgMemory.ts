@@ -14,15 +14,27 @@ export type ProvisionClientResult =
   | { ok: true; accountId: string; ownerAddress: string }
   | { ok: false; error: string };
 
-export async function provisionClientAccount(clientId: number): Promise<ProvisionClientResult> {
+export async function provisionClientAccount(
+  clientId: number,
+  authToken?: string | null,
+): Promise<ProvisionClientResult> {
   try {
     const ns = clientNamespace(clientId);
     const { accountId, ownerAddress } = await provisionCustomerAccount(ns);
-    await fetch(`${BACKEND}/clients/${clientId}/memwal-account`, {
+    // Cache the account id on the client row. This runs server-side, so it MUST
+    // forward the browser's session token — otherwise the backend resolves us to
+    // the default org and can't find the (real-org) client → 404 → the pointer is
+    // silently lost and the UI shows "No org account yet" forever.
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const res = await fetch(`${BACKEND}/clients/${clientId}/memwal-account`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ account_id: accountId }),
-    }).catch(() => {});
+    });
+    if (!res.ok) {
+      return { ok: false, error: `account ready on-chain (${accountId.slice(0, 10)}…) but caching it failed: HTTP ${res.status}` };
+    }
     return { ok: true, accountId, ownerAddress };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "provision failed" };
