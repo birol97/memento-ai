@@ -10,7 +10,9 @@ import { useCurrentAccount } from "@mysten/dapp-kit";
 
 import { createOrgAction, addMemberAction, myOrgsAction } from "@/app/actions/orgDirectory";
 import { provisionClientAccount } from "@/app/actions/orgMemory";
+import { linkOrgAndSwitch } from "@/app/actions/session";
 import { createClient } from "@/lib/api";
+import { getSessionToken, setSession } from "@/lib/session";
 import { ROLES, type Role } from "@/lib/orgChain";
 
 type Note = { ok: boolean; text: string } | null;
@@ -54,10 +56,30 @@ export function Onboarding({
   async function createCompany() {
     if (!company.trim() || busy) return;
     setBusy(true); setNote(null);
-    const r = await createOrgAction(company.trim(), account?.address);
-    if (r.ok) { setOrgId(r.orgId); setOrgDone(true); setNote({ ok: true, text: `“${company}” created on-chain` }); setStep(2); }
-    else setNote({ ok: false, text: r.error });
-    setBusy(false);
+    try {
+      // 1. Mint the on-chain org — but only once. `orgId` persists across retries
+      // of the linking step below so we never create a duplicate company on-chain.
+      let onChainId = orgId;
+      if (!onChainId) {
+        const r = await createOrgAction(company.trim(), account?.address);
+        if (!r.ok) { setNote({ ok: false, text: r.error }); return; }
+        onChainId = r.orgId;
+        setOrgId(onChainId); setOrgDone(true);
+      }
+      // 2. Mirror it to the backend (POST /orgs) and re-scope the session to it, so
+      // the first customer in step 3 is created under THIS company — not the default
+      // org. Retryable: POST /orgs is idempotent on the on-chain object id.
+      const token = getSessionToken();
+      if (token && account?.address) {
+        const linked = await linkOrgAndSwitch(token, company.trim(), onChainId, account.address);
+        if (!linked.ok) { setNote({ ok: false, text: `created on-chain — tap again to finish linking (${linked.error})` }); return; }
+        setSession({ token: linked.token, address: linked.address, orgId: linked.orgId, role: linked.role, orgs: linked.orgs });
+      }
+      setNote({ ok: true, text: `“${company}” created on-chain` });
+      setStep(2);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function addTeammate() {
@@ -80,7 +102,7 @@ export function Onboarding({
       // notes are added — eliminates the race where early notes route to the
       // shared account and then can't be recalled from the per-customer account.
       setNote({ ok: true, text: `${c.name} added — setting up secure memory…` });
-      await provisionClientAccount(c.id).catch(() => {});
+      await provisionClientAccount(c.id, getSessionToken()).catch(() => {});
       setNote({ ok: true, text: `${c.name} is ready — you're all set!` });
       setTimeout(onComplete, 600);
     } catch (e) {

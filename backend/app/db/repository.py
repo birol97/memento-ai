@@ -792,14 +792,28 @@ def list_orgs_for_user(sui_address: str) -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def create_org(name: str, slug: Optional[str] = None) -> Dict[str, Any]:
+def create_org(
+    name: str,
+    slug: Optional[str] = None,
+    org_object_id: Optional[str] = None,
+    owner_address: Optional[str] = None,
+) -> Dict[str, Any]:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO orgs (name, slug) VALUES (?, ?)", (name.strip(), slug)
+            "INSERT INTO orgs (name, slug, org_object_id, owner_address) VALUES (?, ?, ?, ?)",
+            (name.strip(), slug, org_object_id, owner_address),
         )
         return dict(
             conn.execute("SELECT * FROM orgs WHERE id = ?", (cur.lastrowid,)).fetchone()
         )
+
+
+def get_org_by_object_id(org_object_id: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM orgs WHERE org_object_id = ?", (org_object_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def add_org_member(org_id: int, sui_address: str, role: str) -> None:

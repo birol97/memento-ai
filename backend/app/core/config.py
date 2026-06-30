@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     # Best-effort: on startup, rebuild the whole client list from owned caps so the
     # app is usable against an empty DB. Turn off if you don't want startup RPC.
     rebuild_from_chain_on_startup: bool = True
+    # The published salescall::org package — lets /auth/sync rebuild a user's org
+    # membership from their on-chain MemberCap when SQLite is empty (chain-derived
+    # identity; see services/org_chain.py). Same id the frontend uses as
+    # SUI_ORG_PACKAGE_ID. Leave blank to disable (user is sent to onboarding).
+    sui_org_package_id: str = ""
 
     # ── Auth / multi-tenancy (Phase 1) ──
     # HS256 secret shared with the Next frontend, which mints the session JWT

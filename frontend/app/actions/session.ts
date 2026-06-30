@@ -94,6 +94,43 @@ export async function establishSession(
   }
 }
 
+/**
+ * After a brand-new user creates their company on-chain, mirror it to the backend
+ * (POST /orgs — idempotent on org_object_id) and re-mint the session JWT scoped to
+ * that org. Without this the new user's token still carries no org, so their first
+ * customer would be created under the default org instead of their company — and
+ * chain-derived identity would later re-home the org but leave that customer
+ * stranded. `currentToken` is their existing (orgless) session JWT; it both
+ * authorizes the POST and proves address control.
+ */
+export async function linkOrgAndSwitch(
+  currentToken: string,
+  name: string,
+  orgObjectId: string,
+  ownerAddress: string,
+): Promise<EstablishResult> {
+  try {
+    const { payload } = await jwtVerify(currentToken, secret());
+    const address = String(payload.sub);
+    const res = await fetch(`${backendBase()}/orgs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${currentToken}` },
+      cache: "no-store",
+      body: JSON.stringify({ name, org_object_id: orgObjectId, owner_address: ownerAddress }),
+    });
+    if (!res.ok) return { ok: false, error: `link org failed: ${res.status}` };
+    const org = (await res.json()) as { id: number };
+    // Re-sync + re-mint so every subsequent request is scoped to the new org.
+    const bootstrap = await mint({ sub: address }, "2m");
+    const s = await sync(bootstrap);
+    const role = s.orgs.find((o) => o.id === org.id)?.role ?? "owner";
+    const token = await mint({ sub: address, org_id: org.id, role }, "12h");
+    return { ok: true, token, address, orgId: org.id, role, orgs: s.orgs };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "link failed" };
+  }
+}
+
 /** Switch the active org. Requires the current valid session token (proves the
  * caller already authenticated); re-checks membership before re-minting. */
 export async function switchOrg(currentToken: string, orgId: number): Promise<EstablishResult> {

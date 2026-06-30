@@ -49,6 +49,11 @@ def _require_org_role(org_id: int, principal: Principal, *allowed: str) -> str:
 
 class OrgIn(BaseModel):
     name: str = Field(..., min_length=1)
+    # Level B: the on-chain Org object the user created (gasless, user-signed) and
+    # the zkLogin address that owns it. When present, this DB org is the off-chain
+    # mirror of that on-chain company.
+    org_object_id: Optional[str] = None
+    owner_address: Optional[str] = None
 
 
 class MemberIn(BaseModel):
@@ -75,6 +80,30 @@ def _valid_role(role: str) -> None:
 
 # ─── identity ───────────────────────────────────────────────────────────────
 
+def _rebuild_membership_from_chain(addr: str) -> None:
+    """Re-seed a user's backend org membership from their on-chain MemberCaps.
+
+    Each on-chain Org is mirrored to a DB org keyed by its immutable object id
+    (idempotent via get_org_by_object_id), and membership is restored with the
+    role from the Org's authoritative members table. Best-effort — a chain read
+    failure leaves the user at needs_onboarding rather than 500-ing the login."""
+    from app.services import org_chain
+
+    if not org_chain.enabled():
+        return
+    for co in org_chain.orgs_for_member(addr):
+        existing = repo.get_org_by_object_id(co["org_object_id"])
+        if existing is not None:
+            org_id = existing["id"]
+        else:
+            org_id = repo.create_org(
+                co["name"],
+                org_object_id=co["org_object_id"],
+                owner_address=addr if co["role"] == "owner" else None,
+            )["id"]
+        repo.add_org_member(org_id, addr, co["role"])
+
+
 @router.post("/auth/sync")
 def auth_sync(authorization: Optional[str] = Header(default=None)):
     """First-login provisioning. The Next layer verifies the user's zkLogin
@@ -84,14 +113,28 @@ def auth_sync(authorization: Optional[str] = Header(default=None)):
     addr = verify_token_address(authorization)
     repo.upsert_user(addr)
     m = repo.primary_membership(addr)
+    # Chain-derived identity: no local membership doesn't mean a new user — the
+    # durable record is the on-chain MemberCap. Rebuild the backend org row(s) from
+    # chain, keyed by the immutable on-chain Org object id, so a returning user whose
+    # SQLite was wiped lands in their real org instead of being re-onboarded.
     if m is None:
-        org = repo.create_org(f"{addr[:10]}… workspace")
-        repo.add_org_member(org["id"], addr, "owner")
-        m = {"org_id": org["id"], "role": "owner"}
+        _rebuild_membership_from_chain(addr)
+        m = repo.primary_membership(addr)
+    # Truly new (no on-chain org) → onboarding creates the company on-chain, then
+    # POST /orgs links it. current_org=None signals the frontend to route there.
+    if m is None:
+        return {
+            "sui_address": addr,
+            "current_org": None,
+            "role": None,
+            "needs_onboarding": True,
+            "orgs": [],
+        }
     return {
         "sui_address": addr,
         "current_org": m["org_id"],
         "role": m["role"],
+        "needs_onboarding": False,
         "orgs": repo.list_orgs_for_user(addr),
     }
 
@@ -115,11 +158,35 @@ def me(principal: Principal = Depends(current_principal)):
 # ─── orgs ───────────────────────────────────────────────────────────────────
 
 @router.post("/orgs")
-def create_org(body: OrgIn, principal: Principal = Depends(current_principal)):
-    if principal.sui_address != "default":
-        repo.upsert_user(principal.sui_address)
-    org = repo.create_org(body.name)
-    repo.add_org_member(org["id"], principal.sui_address, "owner")
+def create_org(
+    body: OrgIn,
+    authorization: Optional[str] = Header(default=None),
+    principal: Principal = Depends(current_principal),
+):
+    # A brand-new user's session JWT carries no org yet, so current_principal falls
+    # back to the synthetic "default" principal. Prefer the verified token `sub` so
+    # the org is created under — and owned by — the caller's real Sui address rather
+    # than "default". Falls back to the principal only in transition mode (no token).
+    try:
+        addr = verify_token_address(authorization)
+    except HTTPException:
+        addr = principal.sui_address
+    if addr != "default":
+        repo.upsert_user(addr)
+    # Idempotent on the on-chain object: if this Org was already registered (e.g. a
+    # retried onboarding call, or rebuilt from chain), reuse the row instead of
+    # duplicating it.
+    if body.org_object_id:
+        existing = repo.get_org_by_object_id(body.org_object_id)
+        if existing is not None:
+            repo.add_org_member(existing["id"], addr, "owner")
+            return existing
+    org = repo.create_org(
+        body.name,
+        org_object_id=body.org_object_id,
+        owner_address=body.owner_address or (addr if addr != "default" else None),
+    )
+    repo.add_org_member(org["id"], addr, "owner")
     return org
 
 

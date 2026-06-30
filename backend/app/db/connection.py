@@ -101,6 +101,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_org_members_addr ON org_members(sui_address)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_teams_org ON teams(org_id)")
 
+    # An org is linked to its on-chain Org object (Level B: the company is a Sui
+    # object owned by the creator's zkLogin identity). org_object_id is the 0x… id;
+    # owner_address is the zkLogin address that signed create_org and owns it.
+    org_cols = _column_names(conn, "orgs")
+    if "org_object_id" not in org_cols:
+        conn.execute("ALTER TABLE orgs ADD COLUMN org_object_id TEXT")
+    if "owner_address" not in org_cols:
+        conn.execute("ALTER TABLE orgs ADD COLUMN owner_address TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_orgs_object ON orgs(org_object_id)")
+
     # Communication channels a user connects (email / twilio). Credentials are
     # Fernet-encrypted in config_enc; `identity` is the non-secret display value.
     conn.execute(
