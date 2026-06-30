@@ -18,6 +18,7 @@ import { getSession, setSession } from "@/lib/session";
 import { useSession } from "@/lib/useSession";
 import { OrgBootstrapGate } from "@/components/OrgBootstrapGate";
 import { EmployeeWorkspace } from "@/components/EmployeeWorkspace";
+import { Landing } from "@/components/Landing";
 
 const ENOKI_CONFIGURED =
   !!process.env.NEXT_PUBLIC_ENOKI_API_KEY && !!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
@@ -33,15 +34,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const attempted = useRef<string | null>(null);
 
-  // employee ("customer") login — by key, scoped to granted customers
-  const [empMode, setEmpMode] = useState(false);
-  const [empPub, setEmpPub] = useState("");
-  const [empPriv, setEmpPriv] = useState("");
+  // employee ("customer") login — by key, scoped to granted customers. The form
+  // lives in <Landing>; this owns the auth result + the signed-in identity.
   const [empBusy, setEmpBusy] = useState(false);
   const [empErr, setEmpErr] = useState<string | null>(null);
   const [empIdentity, setEmpIdentity] = useState<{ pubHex: string; address: string } | null>(null);
 
-  async function signInEmployee() {
+  async function signInEmployee(empPub: string, empPriv: string) {
     setEmpBusy(true); setEmpErr(null);
     try {
       if (empPriv.trim()) {
@@ -101,7 +100,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   // Employee ("customer") signed in by key → their scoped workspace.
   if (empIdentity) {
-    return <EmployeeWorkspace identity={empIdentity} onSignOut={() => { setEmpIdentity(null); setEmpMode(false); setEmpPriv(""); setEmpPub(""); }} />;
+    return <EmployeeWorkspace identity={empIdentity} onSignOut={() => { setEmpIdentity(null); setEmpErr(null); }} />;
   }
 
   // Org signed in → full app, but gated behind first-run setup (company + customer).
@@ -109,42 +108,18 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <OrgBootstrapGate>{children}</OrgBootstrapGate>;
   }
 
-  // Sign-in screen — choose Org or Customer (employee).
+  // Signed out → the public hero / landing page, with the launch CTAs embedded.
   const googleWallet = wallets.find((w) => /google/i.test(w.name));
   return (
-    <main className="auth-screen">
-      <div className="auth-card">
-        <h1>Memento AI</h1>
-        <p className="auth-tag">People leave. Knowledge stays.</p>
-
-        {!empMode ? (
-          <>
-            {busy ? (
-              <p className="auth-status">Signing you in…</p>
-            ) : (
-              <button className="auth-google" disabled={connecting || !googleWallet} onClick={() => googleWallet && connect({ wallet: googleWallet })}>
-                {connecting ? "Connecting…" : googleWallet ? "Log in as org (Google)" : "Loading…"}
-              </button>
-            )}
-            <div className="auth-divider"><span>or</span></div>
-            <button className="auth-alt" onClick={() => setEmpMode(true)}>Log in as customer (employee key)</button>
-          </>
-        ) : (
-          <div className="auth-emp">
-            <label className="tm-lbl">Public key</label>
-            <input className="tm-in" placeholder="0x… (optional — view only)" value={empPub} onChange={(e) => setEmpPub(e.target.value)} />
-            <label className="tm-lbl">Private key</label>
-            <input className="tm-in" type="password" placeholder="your key (for read/write)" value={empPriv} onChange={(e) => setEmpPriv(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void signInEmployee(); }} />
-            <button className="auth-google" onClick={() => void signInEmployee()} disabled={empBusy || (!empPriv.trim() && !empPub.trim())}>
-              {empBusy ? "Checking access…" : "Sign in as customer"}
-            </button>
-            <button className="auth-alt" onClick={() => { setEmpMode(false); setEmpErr(null); }}>← Back</button>
-            {empErr && <p className="auth-error">⚠ {empErr}</p>}
-            <p className="tm-hint">You&apos;ll see only the customers your org granted your key.</p>
-          </div>
-        )}
-        {error && <p className="auth-error">⚠ {error}</p>}
-      </div>
-    </main>
+    <Landing
+      busy={busy}
+      connecting={connecting}
+      googleReady={!!googleWallet}
+      onGoogle={() => googleWallet && connect({ wallet: googleWallet })}
+      empBusy={empBusy}
+      empErr={empErr}
+      onEmployeeSignIn={(pub, priv) => void signInEmployee(pub, priv)}
+      error={error}
+    />
   );
 }
